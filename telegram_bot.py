@@ -1,33 +1,35 @@
 """
 CryptoRadar — Telegram Bot.
-Отправка алертов, команды /start /scan /status.
-Осторожная работа с MarkdownV2.
+Отправка алертов через прямые HTTP-запросы к Telegram API.
+Приём команд через python-telegram-bot polling.
 """
 
 import io
 import asyncio
+import requests as http_requests
 from datetime import datetime
-from typing import Optional, Callable, Awaitable
+from typing import Optional, Callable
 
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
 )
-from telegram.constants import ParseMode
 
 import config
 from logger import log
-from utils import escape_md, truncate
+from utils import truncate
 
 
 # ── Глобальные переменные ─────────────────────────────────
 _app: Optional[Application] = None
-_scan_callback: Optional[Callable[[], Awaitable[None]]] = None
+_scan_callback: Optional[Callable] = None
 _last_scan_time: Optional[datetime] = None
 _last_scan_found: int = 0
 _last_scan_total: int = 0
+
+_TG_API = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
 
 
 def set_scan_callback(callback: Callable):
@@ -44,123 +46,69 @@ def update_status(scan_time: datetime, found: int, total: int):
     _last_scan_total = total
 
 
-# ── Команды ────────────────────────────────────────────────
+# ── Прямые HTTP-запросы к Telegram API ─────────────────────
 
-async def _cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /start."""
-    text = (
-        "🔭 *CryptoRadar* — автономный мониторинг криптовалют\n\n"
-        "Сканирую топ\\-30 монет по объёмам на Bybit каждый час\\.\n"
-        "Анализирую 10 технических индикаторов на 15m и 1h\\.\n"
-        "Прошедшие монеты отправляю с AI\\-резюме и графиком\\.\n\n"
-        "📋 *Команды:*\n"
-        "/scan — ручной запуск сканирования\n"
-        "/status — текущий статус бота"
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
-
-
-async def _cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /status."""
-    if _last_scan_time:
-        time_str = escape_md(_last_scan_time.strftime("%H:%M:%S %d.%m.%Y"))
-        text = (
-            f"📊 *Статус CryptoRadar*\n\n"
-            f"Последний скан: {time_str}\n"
-            f"Просканировано: {escape_md(str(_last_scan_total))} монет\n"
-            f"Прошли фильтр: {escape_md(str(_last_scan_found))} монет\n"
-            f"Следующий скан: в :00"
-        )
-    else:
-        text = "📊 *Статус CryptoRadar*\n\nСканирование ещё не запускалось\\."
-
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN_V2)
-
-
-async def _cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик /scan — ручной запуск сканирования."""
-    if _scan_callback is None:
-        await update.message.reply_text("⚠️ Сканирование не настроено\\.", parse_mode=ParseMode.MARKDOWN_V2)
-        return
-
-    await update.message.reply_text("🔄 Запускаю ручное сканирование\\.\\.\\.", parse_mode=ParseMode.MARKDOWN_V2)
-
+def _send_photo_raw(chat_id: str, photo_bytes: bytes, caption: str = "") -> bool:
+    """Отправляет фото через прямой HTTP POST."""
     try:
-        # Запускаем скан в фоне чтобы не блокировать бота
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _scan_callback)
+        url = f"{_TG_API}/sendPhoto"
+        files = {"photo": ("chart.png", io.BytesIO(photo_bytes), "image/png")}
+        data = {"chat_id": chat_id}
+        if caption:
+            data["caption"] = caption[:1024]  # Telegram лимит caption
+        
+        resp = http_requests.post(url, data=data, files=files, timeout=30)
+        if resp.status_code == 200:
+            return True
+        else:
+            log.error(f"Telegram sendPhoto error: {resp.status_code} {resp.text[:200]}")
+            return False
     except Exception as e:
-        error_text = f"❌ Ошибка сканирования: {escape_md(str(e))}"
-        await update.message.reply_text(error_text, parse_mode=ParseMode.MARKDOWN_V2)
+        log.error(f"Telegram sendPhoto exception: {e}")
+        return False
+
+
+def _send_text_raw(chat_id: str, text: str) -> bool:
+    """Отправляет текстовое сообщение через прямой HTTP POST (plain text)."""
+    try:
+        url = f"{_TG_API}/sendMessage"
+        # Нарезаем на куски по 4096 символов (лимит Telegram)
+        chunks = _split_text(text, 4096)
+        for chunk in chunks:
+            data = {"chat_id": chat_id, "text": chunk}
+            resp = http_requests.post(url, json=data, timeout=15)
+            if resp.status_code != 200:
+                log.error(f"Telegram sendMessage error: {resp.status_code} {resp.text[:200]}")
+                return False
+        return True
+    except Exception as e:
+        log.error(f"Telegram sendMessage exception: {e}")
+        return False
+
+
+def _split_text(text: str, max_len: int = 4096) -> list[str]:
+    """Нарезает текст на куски, стараясь резать по переносам строк."""
+    if len(text) <= max_len:
+        return [text]
+    
+    chunks = []
+    while text:
+        if len(text) <= max_len:
+            chunks.append(text)
+            break
+        
+        # Ищем последний перенос строки до лимита
+        cut = text.rfind("\n", 0, max_len)
+        if cut == -1 or cut < max_len // 2:
+            cut = max_len
+        
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\n")
+    
+    return chunks
 
 
 # ── Отправка алертов ───────────────────────────────────────
-
-async def _send_alert_async(
-    bot: Bot,
-    symbol: str,
-    direction: str,
-    score_15m: int,
-    score_1h: int,
-    summary: str,
-    details: str,
-    chart_bytes: Optional[bytes],
-):
-    """Отправляет алерт с графиком и анализом (async)."""
-    chat_id = config.TELEGRAM_CHAT_ID
-
-    dir_emoji = "🟢" if direction == "LONG" else "🔴"
-
-    # ── Caption для фото (до 1024 символов) ──
-    header = (
-        f"{dir_emoji} {escape_md(symbol)} | {escape_md(direction)} | "
-        f"Score: 15m\\={escape_md(str(score_15m))} / 1h\\={escape_md(str(score_1h))}\n\n"
-    )
-
-    # Резюме — экранируем, но сохраняем читаемость
-    safe_summary = escape_md(summary)
-    caption = header + truncate(safe_summary, 1024 - len(header) - 10)
-
-    try:
-        if chart_bytes:
-            photo = io.BytesIO(chart_bytes)
-            photo.name = f"{symbol}_chart.png"
-            await bot.send_photo(
-                chat_id=chat_id,
-                photo=photo,
-                caption=caption,
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
-        else:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=caption,
-                parse_mode=ParseMode.MARKDOWN_V2,
-            )
-
-        # ── Полный анализ отдельным сообщением ──
-        if details and len(details) > len(summary) + 50:
-            # Отправляем plain text чтобы не ломалось на спецсимволах AI-ответа
-            detail_text = f"📋 Полный анализ {symbol}:\n\n{details}"
-            # Telegram лимит 4096 символов
-            if len(detail_text) > 4000:
-                detail_text = detail_text[:4000] + "\n... (обрезано)"
-            await bot.send_message(
-                chat_id=chat_id,
-                text=detail_text,
-            )
-
-        log.info(f"Telegram алерт отправлен: {symbol}")
-
-    except Exception as e:
-        log.error(f"Ошибка отправки алерта {symbol} в Telegram: {e}")
-        # Попытка отправить plain text как fallback
-        try:
-            fallback = f"{dir_emoji} {symbol} | {direction} | Score: 15m={score_15m} / 1h={score_1h}\n\n{summary}"
-            await bot.send_message(chat_id=chat_id, text=fallback[:4000])
-        except Exception as e2:
-            log.error(f"Fallback отправки тоже провалился: {e2}")
-
 
 def send_alert(
     symbol: str,
@@ -171,40 +119,38 @@ def send_alert(
     details: str,
     chart_bytes: Optional[bytes] = None,
 ):
-    """Синхронная обёртка для отправки алерта."""
-    bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(
-            _send_alert_async(bot, symbol, direction, score_15m, score_1h,
-                              summary, details, chart_bytes)
-        )
-    finally:
-        loop.close()
+    """Отправляет алерт: график + краткий caption + полный анализ."""
+    chat_id = config.TELEGRAM_CHAT_ID
+    dir_emoji = "🟢" if direction == "LONG" else "🔴"
 
+    # Заголовок
+    header = f"{dir_emoji} {symbol} | {direction} | Score: 15m={score_15m} / 1h={score_1h}"
 
-async def _send_message_async(bot: Bot, text: str, parse_mode=None):
-    """Отправляет текстовое сообщение."""
-    try:
-        if len(text) > 4000:
-            text = text[:4000] + "\n... (обрезано)"
-        await bot.send_message(
-            chat_id=config.TELEGRAM_CHAT_ID,
-            text=text,
-            parse_mode=parse_mode,
-        )
-    except Exception as e:
-        log.error(f"Ошибка отправки сообщения в Telegram: {e}")
+    # 1. Отправляем график с коротким caption
+    if chart_bytes:
+        caption = f"{header}\n\n{summary}"
+        if len(caption) > 1024:
+            # Caption до 1024 символов — обрезаем summary
+            caption = f"{header}\n\n{truncate(summary, 1024 - len(header) - 5)}"
+        
+        ok = _send_photo_raw(chat_id, chart_bytes, caption)
+        if not ok:
+            log.warning(f"Фото не отправлено для {symbol}, отправляю текстом")
+            _send_text_raw(chat_id, f"{header}\n\n{summary}")
+    else:
+        _send_text_raw(chat_id, f"{header}\n\n{summary}")
+
+    # 2. Полный анализ отдельным сообщением (plain text, без Markdown)
+    if details:
+        full_text = f"📋 Полный анализ {symbol}:\n\n{details}"
+        _send_text_raw(chat_id, full_text)
+
+    log.info(f"Telegram алерт отправлен: {symbol}")
 
 
 def send_message(text: str, parse_mode=None):
-    """Синхронная обёртка для отправки текстового сообщения."""
-    bot = Bot(token=config.TELEGRAM_BOT_TOKEN)
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(_send_message_async(bot, text, parse_mode))
-    finally:
-        loop.close()
+    """Отправляет текстовое сообщение."""
+    _send_text_raw(config.TELEGRAM_CHAT_ID, text)
 
 
 def send_status_report(total: int, passed: int, passed_symbols: list[str]):
@@ -225,13 +171,58 @@ def send_selftest_report(report: str):
     send_message(f"🔧 Daily Self-Test Report\n\n{report}")
 
 
-# ── Запуск бота (polling) ──────────────────────────────────
+# ── Команды бота (polling) ─────────────────────────────────
+
+async def _cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик /start."""
+    text = (
+        "🔭 CryptoRadar — автономный мониторинг криптовалют\n\n"
+        "Сканирую топ-30 монет по объёмам на Bybit каждый час.\n"
+        "Анализирую 10 технических индикаторов на 15m и 1h.\n"
+        "Прошедшие монеты отправляю с AI-резюме и графиком.\n\n"
+        "📋 Команды:\n"
+        "/scan — ручной запуск сканирования\n"
+        "/status — текущий статус бота"
+    )
+    await update.message.reply_text(text)
+
+
+async def _cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик /status."""
+    if _last_scan_time:
+        time_str = _last_scan_time.strftime("%H:%M:%S %d.%m.%Y")
+        text = (
+            f"📊 Статус CryptoRadar\n\n"
+            f"Последний скан: {time_str}\n"
+            f"Просканировано: {_last_scan_total} монет\n"
+            f"Прошли фильтр: {_last_scan_found} монет\n"
+            f"Следующий скан: в :00"
+        )
+    else:
+        text = "📊 Статус CryptoRadar\n\nСканирование ещё не запускалось."
+
+    await update.message.reply_text(text)
+
+
+async def _cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик /scan — ручной запуск сканирования."""
+    if _scan_callback is None:
+        await update.message.reply_text("⚠️ Сканирование не настроено.")
+        return
+
+    await update.message.reply_text("🔄 Запускаю ручное сканирование...")
+
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _scan_callback)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка сканирования: {e}")
+
+
+# ── Запуск бота ────────────────────────────────────────────
 
 def start_bot() -> Application:
-    """
-    Создаёт и настраивает Telegram-бота.
-    Возвращает Application для запуска polling.
-    """
+    """Создаёт и настраивает Telegram-бота для polling."""
     global _app
     _app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
