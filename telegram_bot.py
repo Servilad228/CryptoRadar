@@ -148,7 +148,7 @@ def send_alert(
     log.info(f"Telegram алерт отправлен: {symbol}")
 
 
-def send_message(text: str, parse_mode=None):
+def send_message(text: str):
     """Отправляет текстовое сообщение."""
     _send_text_raw(config.TELEGRAM_CHAT_ID, text)
 

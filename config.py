@@ -54,11 +54,29 @@ STOCH_RSI_OVERBOUGHT = 80
 ADX_PERIOD = 14
 ADX_THRESHOLD = 25
 
-# ── DeepSeek (OpenRouter) ────────────────────────────────
+# ── AI Models (3 роли) ────────────────────────────────────
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek/deepseek-chat-v3-0324")
+ANALYZER_MODEL = os.getenv("ANALYZER_MODEL", "deepseek/deepseek-chat-v3-0324")
+ORDER_MODEL = os.getenv("ORDER_MODEL", "anthropic/claude-3.5-sonnet")
+REVIEW_MODEL = os.getenv("REVIEW_MODEL", "anthropic/claude-3.5-sonnet")
 AI_TIMEOUT = 30  # секунд
 AI_MAX_RETRIES = 2
+
+# ── AI Tips (петля обучения) ─────────────────────────────
+MAX_TIPS_IN_PROMPT = int(os.getenv("MAX_TIPS_IN_PROMPT", "10"))
+
+# ── Trading ──────────────────────────────────────────────
+TRADING_MODE = os.getenv("TRADING_MODE", "demo")  # demo | battle
+TARGET_PROFIT_USD = float(os.getenv("TARGET_PROFIT_USD", "15.0"))
+RR_MIN = float(os.getenv("RR_MIN", "1.5"))
+RR_MAX = float(os.getenv("RR_MAX", "3.0"))
+BREAKEVEN_TRIGGER_PCT = float(os.getenv("BREAKEVEN_TRIGGER_PCT", "40.0"))
+
+# ── Position Tracking ────────────────────────────────────
+DEMO_CHECK_INTERVAL_MIN = int(os.getenv("DEMO_CHECK_INTERVAL_MIN", "10"))
+
+# ── Database ─────────────────────────────────────────────
+DB_PATH = os.getenv("DB_PATH", "data/cryptoradar.db")
 
 # ── Логирование ──────────────────────────────────────────
 LOG_DIR = os.getenv("LOG_DIR", "logs")
@@ -73,3 +91,4 @@ SELFTEST_MINUTE = 0
 
 # ── Rate limiting ────────────────────────────────────────
 API_REQUEST_DELAY = 0.1  # 100ms между запросами к Bybit
+

@@ -1,9 +1,10 @@
 """
-CryptoRadar — Модели данных (Pydantic).
+CryptoRadar — Модели данных.
 """
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 import pandas as pd
@@ -13,6 +14,11 @@ class Direction(str, Enum):
     LONG = "LONG"
     SHORT = "SHORT"
     NEUTRAL = "NEUTRAL"
+
+
+class TradingMode(str, Enum):
+    DEMO = "demo"
+    BATTLE = "battle"
 
 
 @dataclass
@@ -71,9 +77,38 @@ class ScreenResult:
 
 
 @dataclass
-class AnalysisResult:
-    """Финальный результат: скрининг + AI + график."""
-    screen: ScreenResult
-    ai_summary: str = ""          # краткое резюме (3-7 предложений)
-    ai_details: str = ""          # полный анализ
-    chart_bytes: Optional[bytes] = None
+class OrderParams:
+    """Параметры AI-сгенерированного ордера."""
+    symbol: str
+    direction: Direction
+    entry: float
+    sl: float
+    tp: float
+    qty: float
+    rr_ratio: float
+    reasoning: str          # объяснение от ORDER_MODEL
+
+
+@dataclass
+class Order:
+    """Ордер (demo или battle)."""
+    id: str
+    symbol: str
+    direction: Direction
+    entry: float
+    sl: float
+    tp: float
+    qty: float
+    rr_ratio: float
+    status: str              # open, filled, cancelled, closed
+    mode: str                # demo | battle
+    created_at: datetime
+    bybit_order_id: str = ""
+    pnl: float = 0.0
+    sl_moved_to_be: bool = False
+    close_reason: str = ""   # tp_hit / sl_hit / manual
+    close_price: float = 0.0
+    closed_at: Optional[datetime] = None
+    ai_reasoning: str = ""   # логика AI при создании
+
+

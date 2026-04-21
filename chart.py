@@ -45,9 +45,10 @@ _DARK_STYLE = mpf.make_mpf_style(
 )
 
 
-def generate(screen: ScreenResult, klines_df: pd.DataFrame) -> bytes:
+def generate(screen: ScreenResult, klines_df: pd.DataFrame, levels: dict = None) -> bytes:
     """
     Генерирует candlestick-график с overlays и subplots.
+    levels: {"support": float, "resistance": float} — горизонтальные линии.
     Возвращает PNG в виде bytes.
     """
     if klines_df is None or klines_df.empty:
@@ -85,6 +86,25 @@ def generate(screen: ScreenResult, klines_df: pd.DataFrame) -> bytes:
             addplots.append(mpf.make_addplot(bb_lower, color="#78909c", width=0.7, linestyle=":"))
     except Exception:
         pass
+
+    # ── Support / Resistance levels ──
+    if levels:
+        if "support" in levels and levels["support"]:
+            try:
+                support_line = pd.Series([levels["support"]] * len(df), index=df.index)
+                addplots.append(mpf.make_addplot(
+                    support_line, color="#4caf50", width=1.2, linestyle="--"
+                ))
+            except Exception:
+                pass
+        if "resistance" in levels and levels["resistance"]:
+            try:
+                resistance_line = pd.Series([levels["resistance"]] * len(df), index=df.index)
+                addplots.append(mpf.make_addplot(
+                    resistance_line, color="#f44336", width=1.2, linestyle="--"
+                ))
+            except Exception:
+                pass
 
     # ── RSI subplot ──
     has_rsi = False
@@ -155,6 +175,27 @@ def generate(screen: ScreenResult, klines_df: pd.DataFrame) -> bytes:
             panel_ratios=ratios,
             scale_padding={"left": 0.3, "right": 1.0, "top": 0.6, "bottom": 0.5},
         )
+
+        # Подписи уровней S/R
+        if levels:
+            ax_main = axes[0]
+            if "support" in levels and levels["support"]:
+                ax_main.annotate(
+                    f"S: {levels['support']}", xy=(0.01, 0), xycoords='axes fraction',
+                    xytext=(5, 0), textcoords='offset points',
+                    color="#4caf50", fontsize=8, fontweight="bold",
+                    verticalalignment='bottom',
+                    transform=ax_main.get_yaxis_transform(),
+                )
+            if "resistance" in levels and levels["resistance"]:
+                ax_main.annotate(
+                    f"R: {levels['resistance']}", xy=(0.01, 0), xycoords='axes fraction',
+                    xytext=(5, 0), textcoords='offset points',
+                    color="#f44336", fontsize=8, fontweight="bold",
+                    verticalalignment='top',
+                    transform=ax_main.get_yaxis_transform(),
+                )
+
         fig.savefig(buf, format="png", dpi=100, bbox_inches="tight",
                     facecolor=fig.get_facecolor(), edgecolor="none")
         matplotlib.pyplot.close(fig)
