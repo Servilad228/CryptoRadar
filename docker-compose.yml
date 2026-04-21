@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  crypto-radar:
+    build: .
+    container_name: crypto-radar
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+    environment:
+      - TZ=Europe/Moscow
+      - PYTHONUNBUFFERED=1
