@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Код приложения
 COPY . .
 
-# Директория для логов
-RUN mkdir -p /app/logs
+# Директории для логов и SQLite БД
+RUN mkdir -p /app/logs /app/data
 
 CMD ["python", "main.py"]

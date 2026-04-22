@@ -9,6 +9,7 @@ services:
       - .env
     volumes:
       - ./logs:/app/logs
+      - ./data:/app/data
     environment:
       - TZ=Europe/Moscow
       - PYTHONUNBUFFERED=1
