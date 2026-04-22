@@ -148,6 +148,22 @@ def run_selftest():
         results.append(f"❌ ANALYZER_MODEL: {e}")
         all_ok = False
 
+    try:
+        import pytest
+        import os
+        tests_dir = os.path.join(os.path.dirname(__file__), "tests")
+        # Вызываем pytest программно. Перехватываем вывод (чтобы не засорять терминал)
+        # -q для тишины, --tb=short для кратких ошибок
+        exit_code = pytest.main(["-q", "--tb=short", tests_dir])
+        if exit_code == 0:
+            results.append("✅ Unit-Тесты: Пройдены успешно")
+        else:
+            results.append(f"❌ Unit-Тесты: ОБНАРУЖЕНЫ ОШИБКИ (code: {exit_code})")
+            all_ok = False
+    except Exception as e:
+        results.append(f"❌ Unit-Тесты: Ошибка запуска ({e})")
+        all_ok = False
+
     status = "✅ ВСЕ СИСТЕМЫ В НОРМЕ" if all_ok else "⚠️ ЕСТЬ ПРОБЛЕМЫ"
     report = f"{status}\n\n" + "\n".join(results) + f"\n\nВремя: {datetime.now().strftime('%H:%M:%S')}"
     log.info(f"Self-test завершён: {status}")
