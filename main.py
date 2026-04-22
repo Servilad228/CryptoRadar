@@ -27,6 +27,14 @@ from position_tracker import position_tracker
 
 def run_scan():
     """Полный цикл: скрининг -> сохранение -> AI-анализ -> Telegram."""
+    if getattr(config, "IS_SCANNING", False):
+        log.warning("Скан уже запущен, пропускаю.")
+        telegram_bot.send_message("⚠️ Сканирование уже выполняется.")
+        return
+
+    config.IS_SCANNING = True
+    config.CANCEL_SCAN = False
+
     start_time = datetime.now()
     log.info("=" * 60)
     log.info(f"🔭 НАЧАЛО СКАНА — {start_time.strftime('%H:%M:%S %d.%m.%Y')}")
@@ -56,6 +64,10 @@ def run_scan():
         # 5. Обработка прошедших монет
         passed_symbols = []
         for result in passed:
+            if config.CANCEL_SCAN:
+                log.info("Скан прерван по запросу пользователя (main loop).")
+                break
+
             try:
                 coin_data = next((c for c in coins_data if c.symbol == result.symbol), None)
                 if not coin_data:
@@ -105,12 +117,22 @@ def run_scan():
             f"Отправлено: {', '.join(passed_symbols) or 'нет'}"
         )
 
+        if config.CANCEL_SCAN:
+            telegram_bot.send_message("🛑 Сканирование отменено пользователем.")
+        else:
+            telegram_bot.send_message(
+                f"✅ Сканирование завершено!\nВсего проверено: {len(coins_data)}\nНайдено сигналов: {len(passed_symbols)}"
+            )
+
     except Exception as e:
         log.error(f"КРИТИЧЕСКАЯ ОШИБКА СКАНА: {e}", exc_info=True)
         try:
             telegram_bot.send_message(f"❌ Критическая ошибка скана: {e}")
         except Exception:
             pass
+    finally:
+        config.IS_SCANNING = False
+        config.CANCEL_SCAN = False
 
 
 # ── Ежедневный self-test ───────────────────────────────────
@@ -214,6 +236,7 @@ def main():
 
     # 5. Telegram Bot (polling)
     telegram_bot.set_scan_callback(run_scan)
+    telegram_bot.set_selftest_callback(run_selftest)
     app = telegram_bot.start_bot()
 
     def shutdown(sig, frame):

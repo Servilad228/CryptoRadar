@@ -113,6 +113,10 @@ def scan_all(coins: list[dict]) -> list[CoinData]:
     results = []
 
     for i, coin in enumerate(coins):
+        if config.CANCEL_SCAN:
+            log.info("Скан прерван по запросу пользователя (scanner).")
+            break
+
         symbol = coin["symbol"]
         log.debug(f"[{i+1}/{len(coins)}] Загружаю свечи: {symbol}")
 

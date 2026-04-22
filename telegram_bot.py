@@ -34,6 +34,7 @@ from utils import truncate
 # ── Глобальные переменные ─────────────────────────────────
 _app: Optional[Application] = None
 _scan_callback: Optional[Callable] = None
+_selftest_callback: Optional[Callable] = None
 _last_scan_time: Optional[datetime] = None
 _last_scan_found: int = 0
 _last_scan_total: int = 0
@@ -48,6 +49,12 @@ def set_scan_callback(callback: Callable):
     """Устанавливает коллбэк для ручного сканирования."""
     global _scan_callback
     _scan_callback = callback
+
+
+def set_selftest_callback(callback: Callable):
+    """Устанавливает коллбэк для принудительного теста систем."""
+    global _selftest_callback
+    _selftest_callback = callback
 
 
 def update_status(scan_time: datetime, found: int, total: int):
@@ -181,13 +188,32 @@ async def action_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def action_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    if getattr(config, "IS_SCANNING", False):
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Отменить скан", callback_data="cancel_scan")],
+                                   [InlineKeyboardButton("← Назад", callback_data="menu")]])
+        await query.edit_message_text("⚠️ Сканирование уже выполняется.", reply_markup=kb)
+        return
+
     if _scan_callback is None:
         await query.edit_message_text("⚠️ Сканирование не настроено.", reply_markup=get_menu_kb())
         return
 
-    await query.edit_message_text("🔄 Запускаю ручное сканирование...")
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Отменить скан", callback_data="cancel_scan")]])
+    await query.edit_message_text("🔄 Запускаю ручное сканирование...", reply_markup=kb)
+    
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, _scan_callback)
+
+
+async def action_cancel_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if getattr(config, "IS_SCANNING", False):
+        config.CANCEL_SCAN = True
+        await query.edit_message_text("Отменяю сканирование... Ждите завершения текущего шага.", reply_markup=get_menu_kb())
+    else:
+        await query.edit_message_text("Нет активного сканирования для отмены.", reply_markup=get_menu_kb())
 
 
 async def action_lastscan(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -220,12 +246,13 @@ async def action_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def get_settings_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Переключить режим", callback_data="toggle_mode")],
-        [InlineKeyboardButton("💰 Изменить профит", callback_data="edit_profit"),
-         InlineKeyboardButton("📐 Изменить R/R", callback_data="edit_rr")],
-        [InlineKeyboardButton("📊 Мин. порог скринера", callback_data="edit_score")],
-        [InlineKeyboardButton("🔑 API ключи и модели", callback_data="api_keys")],
-        [InlineKeyboardButton("← Назад", callback_data="menu")]
+        [InlineKeyboardButton("📝 Режим торгов", callback_data="toggle_mode")],
+        [InlineKeyboardButton("💰 Профит", callback_data="edit_profit"),
+         InlineKeyboardButton("📐 R/R", callback_data="edit_rr")],
+        [InlineKeyboardButton("📊 Порог скринера", callback_data="edit_score")],
+        [InlineKeyboardButton("🧪 Тест систем", callback_data="run_selftest")],
+        [InlineKeyboardButton("🔑 API и Модели", callback_data="api_keys")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="menu")]
     ])
 
 
@@ -234,17 +261,31 @@ async def action_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     report = server_monitor.monitor.format_report()
-    mode_emoji = "📝 Demo" if config.TRADING_MODE == "demo" else "⚔️ Battle"
+    mode_emoji = "🛡️ DEMO (Paper)" if config.TRADING_MODE == "demo" else "⚔️ BATTLE (Live)"
     
     text = (
-        f"⚙️ НАСТРОЙКИ\n\n"
+        f"🛠 <b>НАСТРОЙКИ СЕРВЕРА</b>\n\n"
         f"{report}\n\n"
-        f"🔧 Режим: {mode_emoji}\n"
-        f"💰 Целевой профит: ${config.TARGET_PROFIT_USD:.2f}\n"
-        f"📐 R/R коридор: {config.RR_MIN} — {config.RR_MAX}\n"
-        f"📊 Проходной балл скринера: {config.MIN_SCORE_TOTAL} (сумма)"
+        f"💠 <b>ПАРАМЕТРЫ БОТА:</b>\n"
+        f"├ Режим: <code>{mode_emoji}</code>\n"
+        f"├ Целевой профит: <code>${config.TARGET_PROFIT_USD:.2f}</code>\n"
+        f"├ Коридор R/R: <code>1:{config.RR_MIN} — 1:{config.RR_MAX}</code>\n"
+        f"└ Порог входа: <code>{config.MIN_SCORE_TOTAL} балл.</code>"
     )
-    await query.edit_message_text(text, reply_markup=get_settings_kb())
+    await query.edit_message_text(text, reply_markup=get_settings_kb(), parse_mode="HTML")
+
+
+async def action_run_selftest(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if _selftest_callback is None:
+        await query.edit_message_text("⚠️ Тест не настроен.", reply_markup=get_settings_kb())
+        return
+
+    await query.edit_message_text("🧪 Запускаю полную проверку систем...")
+    import threading
+    threading.Thread(target=_selftest_callback, daemon=True).start()
 
 
 async def action_toggle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -638,11 +679,13 @@ def setup_dispatcher(app: Application):
     
     app.add_handler(CallbackQueryHandler(action_menu, pattern="^menu$"))
     app.add_handler(CallbackQueryHandler(action_scan, pattern="^scan$"))
+    app.add_handler(CallbackQueryHandler(action_cancel_scan, pattern="^cancel_scan$"))
     app.add_handler(CallbackQueryHandler(action_lastscan, pattern="^lastscan$"))
     app.add_handler(CallbackQueryHandler(action_status, pattern="^status$"))
     
     app.add_handler(CallbackQueryHandler(action_settings, pattern="^settings$"))
     app.add_handler(CallbackQueryHandler(action_toggle_mode, pattern="^toggle_mode$"))
+    app.add_handler(CallbackQueryHandler(action_run_selftest, pattern="^run_selftest$"))
     app.add_handler(CallbackQueryHandler(action_api_keys, pattern="^api_keys$"))
     
     app.add_handler(CallbackQueryHandler(action_orders, pattern="^orders$"))
