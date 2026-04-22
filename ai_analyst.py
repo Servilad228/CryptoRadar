@@ -15,6 +15,8 @@ from models import ScreenResult, Direction
 
 _SYSTEM_PROMPT = """Ты — профессиональный криптоаналитик. Тебе присылают данные технического анализа монеты с двух таймфреймов (15m и 1h). Направления на обоих ТФ совпадают.
 
+ВАЖНО: Если суточный объем торгов монеты слишком мал (менее 5 000 000 USDT) или по технической картине это явно неликвидный щиткоин (огромные тени, отсутствие объемов, аномальные пампы), верни ТОЛЬКО ОДНО СЛОВО: SHITCOIN_SKIP
+
 ОТВЕТ ПИШИ СТРОГО В PLAIN TEXT. ЗАПРЕЩЕНО использовать Markdown-разметку: НЕ используй ###, **, __, ```, *. Только чистый текст с эмодзи.
 
 Структура ответа:
@@ -46,6 +48,7 @@ def _build_user_prompt(screen: ScreenResult, candles_json: str) -> str:
     prompt = f"""Направление: {screen.direction.value}
 Монета: {screen.symbol}
 Текущая цена: {screen.last_price}
+Суточный объем (24h USDT): {screen.volume_24h}
 
 Анализ 15m (score {screen.score_15m}/10):
 {signals_15m}
@@ -120,6 +123,9 @@ def analyze(screen: ScreenResult, klines_1h_df) -> tuple[str, str, dict]:
             )
 
             full_text = response.choices[0].message.content.strip()
+
+            if "SHITCOIN_SKIP" in full_text:
+                raise RuntimeError("Щиткоин отсеян нейросетью по объему/паттернам (SHITCOIN_SKIP)")
 
             # Разделяем на summary и details
             summary = _extract_summary(full_text)

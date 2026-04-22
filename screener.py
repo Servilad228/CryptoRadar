@@ -43,6 +43,7 @@ def screen_coin(coin: CoinData) -> ScreenResult:
         direction=Direction.NEUTRAL,
         score_15m=0,
         score_1h=0,
+        volume_24h=coin.volume_24h,
         passed=False,
     )
 
@@ -88,14 +89,13 @@ def screen_coin(coin: CoinData) -> ScreenResult:
     result.score_1h = score_1h
 
     # 4. Проверка с минимальными порогами
-    pass_15m = score_15m >= config.MIN_SCORE_15M
-    pass_1h = score_1h >= config.MIN_SCORE_1H
+    total_score = score_15m + score_1h
 
-    if pass_15m and pass_1h:
+    if total_score >= config.MIN_SCORE_TOTAL:
         result.passed = True
-        log.info(f"✅ {coin.symbol} ПРОШЛА | {result.direction.value} | 15m({score_15m}), 1h({score_1h})")
+        log.info(f"✅ {coin.symbol} ПРОШЛА | {result.direction.value} | Сумма={total_score} (15m: {score_15m}, 1h: {score_1h})")
     else:
-        log.debug(f"❌ {coin.symbol}: не добрала баллы (15m={score_15m}, 1h={score_1h})")
+        log.debug(f"❌ {coin.symbol}: не добрала баллы (сумма={total_score})")
 
     return result
 

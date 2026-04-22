@@ -526,7 +526,9 @@ async def action_create_order(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await msg.edit_text("❌ Ошибка: не удалось получить текущую цену с Bybit.")
                 return
             
-            current_price = float(ticker_response["result"]["list"][0]["lastPrice"])
+            ticker_data = ticker_response["result"]["list"][0]
+            current_price = float(ticker_data["lastPrice"])
+            volume_24h = float(ticker_data["volume24h"])
         except Exception as api_err:
             await msg.edit_text(f"❌ Ошибка получения цены: {api_err}")
             return
@@ -552,7 +554,7 @@ async def action_create_order(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         loop = asyncio.get_event_loop()
         params = await loop.run_in_executor(None, order_ai.generate_order_params, 
-            symbol, direction, current_price, support, resistance)
+            symbol, direction, current_price, support, resistance, volume_24h)
             
         text = (
             f"📋 Сгенерирован ордер {symbol} {direction}\n\n"

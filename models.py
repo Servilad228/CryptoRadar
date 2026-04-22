@@ -52,6 +52,7 @@ class ScreenResult:
     direction: Direction          # финальное направление (совпавшее)
     score_15m: int                # бычий/медвежий скор на 15m
     score_1h: int                 # бычий/медвежий скор на 1h
+    volume_24h: float = 0.0       # суточный объем (для щиткоин-чека)
     signals_15m: list[Signal] = field(default_factory=list)
     signals_1h: list[Signal] = field(default_factory=list)
     passed: bool = False          # прошла ли фильтр

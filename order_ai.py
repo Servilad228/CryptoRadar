@@ -15,14 +15,16 @@ from models import OrderParams, Direction
 _ORDER_SYSTEM_PROMPT = """Ты — профессиональный трейдер. На основе уровней поддержки/сопротивления и технического анализа рассчитай оптимальный ордер.
 
 ПРАВИЛА:
-1. Risk/Reward ДОЛЖЕН быть в коридоре от {rr_min} до {rr_max}
-2. Stop-Loss должен быть за ближайшим уровнем (поддержка для LONG, сопротивление для SHORT)
-3. Take-Profit — на уровне сопротивления (LONG) или поддержки (SHORT)
-4. Размер позиции рассчитывается из целевого профита: qty = target_profit / |TP - entry|
-5. Entry должен быть рядом с текущей ценой (±1-2%)
+1. Оцени признаки щиткоина: если монета имеет ограниченную ликвидность, аномальные пампы/тени или суточный обьем < 5M USDT - ОБЯЗАТЕЛЬНО верни ошибку.
+2. Risk/Reward ДОЛЖЕН быть в коридоре от {rr_min} до {rr_max}
+3. Stop-Loss должен быть за ближайшим уровнем (поддержка для LONG, сопротивление для SHORT)
+4. Take-Profit — на уровне сопротивления (LONG) или поддержки (SHORT)
+5. Размер позиции рассчитывается из целевого профита: qty = target_profit / |TP - entry|
+6. Entry должен быть рядом с текущей ценой (±1-2%)
 
 ОТВЕТЬ СТРОГО В JSON (без Markdown, без ```):
-{{"entry": <float>, "sl": <float>, "tp": <float>, "qty": <float>, "rr": <float>, "reasoning": "<объяснение логики в 2-3 предложения>"}}"""
+Если все окей: {{"entry": <float>, "sl": <float>, "tp": <float>, "qty": <float>, "rr": <float>, "reasoning": "<объяснение>"}}
+Если это щиткоин: {{"error": "SHITCOIN"}}"""
 
 
 def _get_client() -> OpenAI:
@@ -39,6 +41,7 @@ def generate_order_params(
     current_price: float,
     support: float,
     resistance: float,
+    volume_24h: float = 0.0,
     target_profit: float = None,
     rr_min: float = None,
     rr_max: float = None,
@@ -62,6 +65,7 @@ def generate_order_params(
 Текущая цена: {current_price}
 Поддержка: {support}
 Сопротивление: {resistance}
+Суточный объем (24h USDT): {volume_24h}
 Целевой профит: ${target_profit}
 R/R коридор: {rr_min} — {rr_max}"""
 
@@ -101,6 +105,9 @@ R/R коридор: {rr_min} — {rr_max}"""
                     json_str = match.group(0)
 
             data = json.loads(json_str)
+
+            if data.get("error") == "SHITCOIN":
+                raise RuntimeError("Отсеяно ORDER_MODEL: обнаружен щиткоин по признакам и объему.")
 
             params = OrderParams(
                 symbol=symbol,

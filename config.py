@@ -24,8 +24,7 @@ TIMEFRAMES = ["15", "60"]  # 15m и 1h (формат Bybit API v5)
 KLINE_LIMIT = 200  # количество свечей для загрузки
 
 # ── Скоринг ───────────────────────────────────────────────
-MIN_SCORE_15M = int(os.getenv("MIN_SCORE_15M", "4"))  # проходной балл для 15 мин
-MIN_SCORE_1H = int(os.getenv("MIN_SCORE_1H", "4"))    # проходной балл для 1 часа
+MIN_SCORE_TOTAL = int(os.getenv("MIN_SCORE_TOTAL", "11"))  # суммарный проходной балл (15m + 1h)
 
 # ── Индикаторы: пороги ────────────────────────────────────
 RSI_PERIOD = 14
@@ -58,8 +57,8 @@ ADX_THRESHOLD = 25
 # ── AI Models (3 роли) ────────────────────────────────────
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 ANALYZER_MODEL = os.getenv("ANALYZER_MODEL", "deepseek/deepseek-chat-v3-0324")
-ORDER_MODEL = os.getenv("ORDER_MODEL", "anthropic/claude-3.5-sonnet")
-REVIEW_MODEL = os.getenv("REVIEW_MODEL", "anthropic/claude-3.5-sonnet")
+ORDER_MODEL = os.getenv("ORDER_MODEL", "anthropic/claude-3-5-sonnet")  # Используем дефисы, так надежнее
+REVIEW_MODEL = os.getenv("REVIEW_MODEL", "anthropic/claude-3-5-sonnet")
 AI_TIMEOUT = 30  # секунд
 AI_MAX_RETRIES = 2
 
