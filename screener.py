@@ -68,40 +68,34 @@ def screen_coin(coin: CoinData) -> ScreenResult:
     dir_15m = _determine_direction(long_15m, short_15m)
     dir_1h = _determine_direction(long_1h, short_1h)
 
-    # ── Проверка 1: направления должны совпадать ──
+    # 1. Проверка направления (должны совпадать и не быть NEUTRAL)
     if dir_15m == Direction.NEUTRAL or dir_1h == Direction.NEUTRAL:
-        log.debug(f"{coin.symbol}: NEUTRAL на одном из ТФ (15m={dir_15m}, 1h={dir_1h})")
+        log.debug(f"{coin.symbol}: NEUTRAL на одном из ТФ")
         return result
 
     if dir_15m != dir_1h:
-        log.debug(f"{coin.symbol}: направления не совпадают (15m={dir_15m}, 1h={dir_1h})")
+        log.debug(f"{coin.symbol}: направления не совпадают")
         return result
 
-    # Направления совпали
-    direction = dir_15m
-    result.direction = direction
+    # 2. Направления совпали
+    result.direction = dir_15m
 
-    # Скор = кол-во сигналов совпавшего направления
-    if direction == Direction.LONG:
-        result.score_15m = long_15m
-        result.score_1h = long_1h
-    else:
-        result.score_15m = short_15m
-        result.score_1h = short_1h
+    # 3. Вычисление скора
+    score_15m = long_15m if dir_15m == Direction.LONG else short_15m
+    score_1h = long_1h if dir_1h == Direction.LONG else short_1h
 
-    # ── Проверка 2: минимальный скор на каждом ТФ ──
-    min_score = result.min_score
-    if min_score >= config.MIN_SCORE_THRESHOLD:
+    result.score_15m = score_15m
+    result.score_1h = score_1h
+
+    # 4. Проверка с минимальными порогами
+    pass_15m = score_15m >= config.MIN_SCORE_15M
+    pass_1h = score_1h >= config.MIN_SCORE_1H
+
+    if pass_15m and pass_1h:
         result.passed = True
-        log.info(
-            f"✅ {coin.symbol} ПРОШЛА | {direction.value} | "
-            f"Score: 15m={result.score_15m}, 1h={result.score_1h} (min={min_score})"
-        )
+        log.info(f"✅ {coin.symbol} ПРОШЛА | {result.direction.value} | 15m({score_15m}), 1h({score_1h})")
     else:
-        log.debug(
-            f"❌ {coin.symbol} не прошла порог | {direction.value} | "
-            f"Score: 15m={result.score_15m}, 1h={result.score_1h} (min={min_score} < {config.MIN_SCORE_THRESHOLD})"
-        )
+        log.debug(f"❌ {coin.symbol}: не добрала баллы (15m={score_15m}, 1h={score_1h})")
 
     return result
 

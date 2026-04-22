@@ -518,14 +518,18 @@ async def action_create_order(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     import ai_analyst
     try:
-        # Для ордера нужны уровни. Можно переиспользовать прошлый скан, или просто взять текущую цену
-        from scanner import get_tickers
-        ticker = get_tickers([symbol]).get(symbol)
-        if not ticker:
-            await msg.edit_text("❌ Ошибка: не удалось получить текущую цену.")
-            return
+        try:
+            from order_manager import order_manager
+            session = order_manager._get_session()
+            ticker_response = session.get_tickers(category="linear", symbol=symbol)
+            if ticker_response["retCode"] != 0 or not ticker_response["result"]["list"]:
+                await msg.edit_text("❌ Ошибка: не удалось получить текущую цену с Bybit.")
+                return
             
-        current_price = float(ticker["lastPrice"])
+            current_price = float(ticker_response["result"]["list"][0]["lastPrice"])
+        except Exception as api_err:
+            await msg.edit_text(f"❌ Ошибка получения цены: {api_err}")
+            return
         
         # Получаем уровни через быстрый анализ или берём из кэша. В данном случае просто имитируем уровни
         # Так как это сложно, используем order_ai и пусть он берет текущую цену

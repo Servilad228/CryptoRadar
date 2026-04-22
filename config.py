@@ -24,7 +24,8 @@ TIMEFRAMES = ["15", "60"]  # 15m и 1h (формат Bybit API v5)
 KLINE_LIMIT = 200  # количество свечей для загрузки
 
 # ── Скоринг ───────────────────────────────────────────────
-MIN_SCORE_THRESHOLD = int(os.getenv("MIN_SCORE", "3"))  # мягкий (для ML)
+MIN_SCORE_15M = int(os.getenv("MIN_SCORE_15M", "4"))  # проходной балл для 15 мин
+MIN_SCORE_1H = int(os.getenv("MIN_SCORE_1H", "4"))    # проходной балл для 1 часа
 
 # ── Индикаторы: пороги ────────────────────────────────────
 RSI_PERIOD = 14
