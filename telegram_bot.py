@@ -41,7 +41,7 @@ _last_scan_total: int = 0
 _TG_API = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
 
 # Состояния ConversationHandler
-EDIT_PROFIT, EDIT_RR, EDIT_KEY = range(3)
+EDIT_PROFIT, EDIT_RR, EDIT_KEY, EDIT_SCORE = range(4)
 
 
 def set_scan_callback(callback: Callable):
@@ -223,6 +223,7 @@ def get_settings_kb():
         [InlineKeyboardButton("🔄 Переключить режим", callback_data="toggle_mode")],
         [InlineKeyboardButton("💰 Изменить профит", callback_data="edit_profit"),
          InlineKeyboardButton("📐 Изменить R/R", callback_data="edit_rr")],
+        [InlineKeyboardButton("📊 Мин. порог скринера", callback_data="edit_score")],
         [InlineKeyboardButton("🔑 API ключи и модели", callback_data="api_keys")],
         [InlineKeyboardButton("← Назад", callback_data="menu")]
     ])
@@ -240,7 +241,8 @@ async def action_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{report}\n\n"
         f"🔧 Режим: {mode_emoji}\n"
         f"💰 Целевой профит: ${config.TARGET_PROFIT_USD:.2f}\n"
-        f"📐 R/R коридор: {config.RR_MIN} — {config.RR_MAX}"
+        f"📐 R/R коридор: {config.RR_MIN} — {config.RR_MAX}\n"
+        f"📊 Проходной балл скринера: {config.MIN_SCORE_TOTAL} (сумма)"
     )
     await query.edit_message_text(text, reply_markup=get_settings_kb())
 
@@ -316,6 +318,22 @@ async def handle_edit_rr(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Установлен R/R: {rmin} — {rmax}", reply_markup=get_menu_kb())
     except ValueError:
         await update.message.reply_text("❌ Ошибка ввода. Возврат в меню.", reply_markup=get_menu_kb())
+    return ConversationHandler.END
+
+
+async def prompt_edit_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.message.reply_text("Введите новый проходной балл скринера в виде числа (например: 11):")
+    return EDIT_SCORE
+
+async def handle_edit_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        val = int(update.message.text.strip())
+        config.MIN_SCORE_TOTAL = val
+        await update.message.reply_text(f"✅ Базовый порог установлен на: {val}", reply_markup=get_menu_kb())
+    except ValueError:
+        await update.message.reply_text("❌ Ошибка ввода: ожидается целое число. Возврат в меню.", reply_markup=get_menu_kb())
     return ConversationHandler.END
 
 
@@ -646,11 +664,13 @@ def setup_dispatcher(app: Application):
         entry_points=[
             CallbackQueryHandler(prompt_edit_profit, pattern="^edit_profit$"),
             CallbackQueryHandler(prompt_edit_rr, pattern="^edit_rr$"),
+            CallbackQueryHandler(prompt_edit_score, pattern="^edit_score$"),
             CallbackQueryHandler(prompt_edit_key, pattern="^edit_key:"),
         ],
         states={
             EDIT_PROFIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_profit)],
             EDIT_RR: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_rr)],
+            EDIT_SCORE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_score)],
             EDIT_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_key)],
         },
         fallbacks=[CommandHandler("cancel", cancel_edit)],
