@@ -1,39 +1,29 @@
 """
 CryptoRadar — AI-аналитик (Анализатор через OpenRouter).
 Генерирует резюме, извлекает уровни, рассчитывает вероятность.
+Использует Instructor + Pydantic для Structured Outputs.
 """
 
 import json
-import re
+import instructor
 from openai import OpenAI
 
 import config
 import database
 from logger import log
 from models import ScreenResult, Direction
+from schemas import AnalysisResponse
 
 
 _SYSTEM_PROMPT = """Ты — профессиональный криптоаналитик. Тебе присылают данные технического анализа монеты с двух таймфреймов (15m и 1h). Направления на обоих ТФ совпадают.
 
-ВАЖНО: Если суточный объем торгов монеты слишком мал (менее 5 000 000 USDT) или по технической картине это явно неликвидный щиткоин (огромные тени, отсутствие объемов, аномальные пампы), верни ТОЛЬКО ОДНО СЛОВО: SHITCOIN_SKIP
+Твоя задача — проанализировать данные и вернуть структурированный ответ.
 
-ОТВЕТ ПИШИ СТРОГО В PLAIN TEXT. ЗАПРЕЩЕНО использовать Markdown-разметку: НЕ используй ###, **, __, ```, *. Только чистый текст с эмодзи.
+ВАЖНО: Если суточный объем торгов монеты слишком мал (менее 5 000 000 USDT) или по технической картине это явно неликвидный щиткоин (огромные тени, отсутствие объемов, аномальные пампы), установи флаг is_shitcoin в true.
 
-Структура ответа:
+В summary пиши БЕЗ markdown разметки, только plain text с эмодзи. Конкретно объясни, почему монета пойдёт в указанном направлении, логику входа и на что обратить внимание.
 
-📝 РЕЗЮМЕ
-(5-7 предложений: конкретно почему монета пойдёт в указанном направлении, логика входа, на что обратить внимание)
-
-📊 КЛЮЧЕВЫЕ УРОВНИ
-- Поддержка: <точная цена float>
-- Сопротивление: <точная цена float>
-
-⚠️ РИСКИ
-- (пункт 1)
-- (пункт 2)
-- (пункт 3)
-
-Пиши лаконично. Уровни — строго числа. Не давай прямых финансовых советов — только анализ данных."""
+Уровни support и resistance должны быть точными ценами (float). Не давай прямых финансовых советов — только анализ данных."""
 
 
 def _build_user_prompt(screen: ScreenResult, candles_json: str) -> str:
@@ -78,14 +68,14 @@ def _get_client() -> OpenAI:
 
 def analyze(screen: ScreenResult, klines_1h_df) -> tuple[str, str, dict]:
     """
-    Отправляет данные монеты в AI для анализа.
+    Отправляет данные монеты в AI для анализа с использованием Structured Outputs.
     
     Возвращает (summary, details, levels):
-    - summary: секции СИЛА + РЕЗЮМЕ (для caption)
-    - details: полный анализ
+    - summary: краткое резюме (для caption)
+    - details: полный анализ с рисками
     - levels: {"support": float, "resistance": float}
     
-    Raises: RuntimeError при провале после всех retry.
+    Raises: RuntimeError при провале после всех retry или если is_shitcoin=True.
     """
     # Подготовка данных свечей (последние 50)
     candles = []
@@ -103,7 +93,10 @@ def analyze(screen: ScreenResult, klines_1h_df) -> tuple[str, str, dict]:
     candles_json = json.dumps(candles, ensure_ascii=False)
 
     user_prompt = _build_user_prompt(screen, candles_json)
-    client = _get_client()
+    
+    # Оборачиваем клиент в Instructor для Structured Outputs
+    base_client = _get_client()
+    client = instructor.from_openai(base_client, mode=instructor.Mode.JSON)
 
     last_error = None
 
@@ -111,8 +104,10 @@ def analyze(screen: ScreenResult, klines_1h_df) -> tuple[str, str, dict]:
         try:
             log.info(f"AI анализ {screen.symbol} (попытка {attempt})...")
 
-            response = client.chat.completions.create(
+            # Используем Instructor с response_model=AnalysisResponse
+            response: AnalysisResponse = client.chat.completions.create(
                 model=config.ANALYZER_MODEL,
+                response_model=AnalysisResponse,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -122,89 +117,50 @@ def analyze(screen: ScreenResult, klines_1h_df) -> tuple[str, str, dict]:
                 timeout=config.AI_TIMEOUT,
             )
 
-            full_text = response.choices[0].message.content.strip()
+            # Проверка флага щиткоина
+            if response.is_shitcoin:
+                raise RuntimeError(
+                    f"Щиткоин отсеян нейросетью по объему/паттернам: {screen.symbol}"
+                )
 
-            if "SHITCOIN_SKIP" in full_text:
-                raise RuntimeError("Щиткоин отсеян нейросетью по объему/паттернам (SHITCOIN_SKIP)")
+            # Формируем полный текст анализа для details
+            risks_text = "\n".join(f"- {risk}" for risk in response.risks)
+            full_text = f"{response.summary}\n\n⚠️ РИСКИ:\n{risks_text}"
+            
+            if response.key_insight:
+                full_text += f"\n\n💡 {response.key_insight}"
 
-            # Разделяем на summary и details
-            summary = _extract_summary(full_text)
+            # Формируем levels dict
+            levels = {
+                "support": response.support,
+                "resistance": response.resistance,
+            }
 
-            # Извлекаем уровни
-            levels = _extract_levels(full_text)
+            log.info(
+                f"AI анализ {screen.symbol} — готов | "
+                f"Support: {response.support} | Resistance: {response.resistance}"
+            )
+            return response.summary, full_text, levels
 
-            log.info(f"AI анализ {screen.symbol} — готов ({len(full_text)} символов)")
-            return summary, full_text, levels
-
+        except instructor.exceptions.InstructorRetryException as e:
+            last_error = e
+            log.warning(
+                f"AI попытка {attempt} для {screen.symbol} провалилась (Instructor retry): {e}"
+            )
+        except RuntimeError:
+            # Пробрасываем RuntimeError (щиткоин) дальше
+            raise
         except Exception as e:
             last_error = e
             log.warning(f"AI попытка {attempt} для {screen.symbol} провалилась: {e}")
 
     # Все попытки исчерпаны
-    error_msg = f"AI анализ {screen.symbol} провалился после {config.AI_MAX_RETRIES} попыток: {last_error}"
+    error_msg = (
+        f"AI анализ {screen.symbol} провалился после {config.AI_MAX_RETRIES} попыток: "
+        f"{last_error}"
+    )
     log.error(error_msg)
     raise RuntimeError(error_msg)
-
-
-def _extract_summary(text: str) -> str:
-    """
-    Извлекает краткое резюме из полного ответа.
-    Берёт всё до секции КЛЮЧЕВЫЕ УРОВНИ.
-    """
-    lines = text.split("\n")
-    summary_lines = []
-
-    for line in lines:
-        if any(marker in line for marker in ["📊 КЛЮЧЕВЫЕ", "📊 УРОВНИ", "⚖️ RISK", "⚖️", "⚠️ РИСКИ", "⚠️"]):
-            break
-        summary_lines.append(line)
-
-    result = "\n".join(summary_lines).strip()
-    # Ограничиваем 900 символами (Telegram caption = 1024, запас для заголовка)
-    if len(result) > 900:
-        result = result[:897] + "..."
-    return result
-
-
-def _extract_levels(text: str) -> dict:
-    """
-    Парсит уровни поддержки и сопротивления из ответа AI.
-    Returns: {"support": float, "resistance": float}
-    Если не найдено — возвращает пустой dict.
-    """
-    levels = {}
-
-    # Паттерны для поиска уровней
-    support_patterns = [
-        r"[Пп]оддержка[:\s]+([0-9][0-9,.\s]*[0-9])",
-        r"[Ss]upport[:\s]+([0-9][0-9,.\s]*[0-9])",
-    ]
-    resistance_patterns = [
-        r"[Сс]опротивление[:\s]+([0-9][0-9,.\s]*[0-9])",
-        r"[Rr]esistance[:\s]+([0-9][0-9,.\s]*[0-9])",
-    ]
-
-    for pattern in support_patterns:
-        match = re.search(pattern, text)
-        if match:
-            try:
-                val = match.group(1).replace(",", "").replace(" ", "")
-                levels["support"] = float(val)
-                break
-            except ValueError:
-                continue
-
-    for pattern in resistance_patterns:
-        match = re.search(pattern, text)
-        if match:
-            try:
-                val = match.group(1).replace(",", "").replace(" ", "")
-                levels["resistance"] = float(val)
-                break
-            except ValueError:
-                continue
-
-    return levels
 
 
 def estimate_probability(screen: ScreenResult) -> int:

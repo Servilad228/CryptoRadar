@@ -1,30 +1,32 @@
 """
 CryptoRadar — AI генерация ордеров (ORDER_MODEL — Claude Sonnet).
 Создаёт оптимальные параметры ордера, механическая валидация.
+Использует Instructor + Pydantic для Structured Outputs.
 """
 
-import json
+import instructor
 from openai import OpenAI
 
 import config
 import database
 from logger import log
 from models import OrderParams, Direction
+from schemas import OrderResponse
 
 
 _ORDER_SYSTEM_PROMPT = """Ты — профессиональный трейдер. На основе уровней поддержки/сопротивления и технического анализа рассчитай оптимальный ордер.
 
+Твоя задача — вернуть структурированный ответ с параметрами ордера.
+
 ПРАВИЛА:
-1. Оцени признаки щиткоина: если монета имеет ограниченную ликвидность, аномальные пампы/тени или суточный обьем < 5M USDT - ОБЯЗАТЕЛЬНО верни ошибку.
+1. Оцени признаки щиткоина: если монета имеет ограниченную ликвидность, аномальные пампы/тени или суточный объём < 5M USDT - установи флаг is_shitcoin в true.
 2. Risk/Reward ДОЛЖЕН быть в коридоре от {rr_min} до {rr_max}
 3. Stop-Loss должен быть за ближайшим уровнем (поддержка для LONG, сопротивление для SHORT)
 4. Take-Profit — на уровне сопротивления (LONG) или поддержки (SHORT)
 5. Размер позиции рассчитывается из целевого профита: qty = target_profit / |TP - entry|
 6. Entry должен быть рядом с текущей ценой (±1-2%)
 
-ОТВЕТЬ СТРОГО В JSON (без Markdown, без ```):
-Если все окей: {{"entry": <float>, "sl": <float>, "tp": <float>, "qty": <float>, "rr": <float>, "reasoning": "<объяснение>"}}
-Если это щиткоин: {{"error": "SHITCOIN"}}"""
+В reasoning кратко объясни логику расстановки уровней (2-3 предложения)."""
 
 
 def _get_client() -> OpenAI:
@@ -75,15 +77,21 @@ R/R коридор: {rr_min} — {rr_max}"""
         tips_text = "\n".join(f"- {t}" for t in tips)
         user_prompt += f"\n\n📋 Советы с прошлых сделок:\n{tips_text}"
 
-    client = _get_client()
+    # Оборачиваем клиент в Instructor для Structured Outputs
+    base_client = _get_client()
+    client = instructor.from_openai(base_client, mode=instructor.Mode.JSON)
+    
     last_error = None
+    original_user_prompt = user_prompt  # Сохраняем оригинальный промпт для retry
 
     for attempt in range(1, config.AI_MAX_RETRIES + 1):
         try:
             log.info(f"ORDER_MODEL: генерация ордера {symbol} {direction} (попытка {attempt})")
 
-            response = client.chat.completions.create(
+            # Используем Instructor с response_model=OrderResponse
+            response: OrderResponse = client.chat.completions.create(
                 model=config.ORDER_MODEL,
+                response_model=OrderResponse,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -93,38 +101,33 @@ R/R коридор: {rr_min} — {rr_max}"""
                 timeout=config.AI_TIMEOUT,
             )
 
-            raw = response.choices[0].message.content.strip()
-            
-            # Извлекаем JSON (может быть обёрнут в ```)
-            json_str = raw
-            if "```" in raw:
-                # Убираем markdown code blocks
-                import re
-                match = re.search(r'\{.*\}', raw, re.DOTALL)
-                if match:
-                    json_str = match.group(0)
+            # Проверка флага щиткоина
+            if response.is_shitcoin:
+                raise RuntimeError(
+                    f"Отсеяно ORDER_MODEL: обнаружен щиткоин по признакам и объёму: {symbol}"
+                )
 
-            data = json.loads(json_str)
-
-            if data.get("error") == "SHITCOIN":
-                raise RuntimeError("Отсеяно ORDER_MODEL: обнаружен щиткоин по признакам и объему.")
-
+            # Конвертируем OrderResponse в OrderParams (внутренняя модель)
             params = OrderParams(
                 symbol=symbol,
                 direction=Direction.LONG if direction == "LONG" else Direction.SHORT,
-                entry=float(data["entry"]),
-                sl=float(data["sl"]),
-                tp=float(data["tp"]),
-                qty=float(data["qty"]),
-                rr_ratio=float(data["rr"]),
-                reasoning=data.get("reasoning", ""),
+                entry=response.entry,
+                sl=response.sl,
+                tp=response.tp,
+                qty=response.qty,
+                rr_ratio=response.rr_ratio,
+                reasoning=response.reasoning,
             )
 
             # Механическая валидация
             is_valid, errors = validate_order(params, direction, current_price)
 
             if is_valid:
-                log.info(f"ORDER_MODEL: ордер {symbol} валиден (R/R={params.rr_ratio:.2f})")
+                log.info(
+                    f"ORDER_MODEL: ордер {symbol} валиден | "
+                    f"Entry: {params.entry} | SL: {params.sl} | TP: {params.tp} | "
+                    f"R/R: {params.rr_ratio:.2f}"
+                )
                 return params
             else:
                 error_text = "; ".join(errors)
@@ -132,15 +135,22 @@ R/R коридор: {rr_min} — {rr_max}"""
 
                 if attempt < config.AI_MAX_RETRIES:
                     # Retry с feedback об ошибках
-                    user_prompt += f"\n\n⚠️ Предыдущий ответ не прошёл проверку:\n{error_text}\nИсправь параметры."
+                    user_prompt = (
+                        f"{original_user_prompt}\n\n"
+                        f"⚠️ Предыдущий ответ не прошёл проверку:\n{error_text}\n"
+                        f"Исправь параметры."
+                    )
                     continue
                 else:
                     raise RuntimeError(f"Ордер не прошёл валидацию: {error_text}")
 
-        except json.JSONDecodeError as e:
+        except instructor.exceptions.InstructorRetryException as e:
             last_error = e
-            log.warning(f"ORDER_MODEL: невалидный JSON (попытка {attempt}): {e}")
+            log.warning(
+                f"ORDER_MODEL: попытка {attempt} провалилась (Instructor retry): {e}"
+            )
         except RuntimeError:
+            # Пробрасываем RuntimeError (щиткоин или валидация) дальше
             raise
         except Exception as e:
             last_error = e
